@@ -1,0 +1,162 @@
+#include "main.h"
+#include "fatfs.h"
+#include "fatfs_sd.h"
+#include "string.h"
+#include "stdio.h"
+
+/* Definiciones globales */
+SPI_HandleTypeDef hspi1;
+UART_HandleTypeDef huart2, huart6;
+FATFS fs, *pfs;
+FIL archivo;
+FRESULT resultado;
+DWORD clustersLibres;
+uint32_t espacioTotal, espacioLibre;
+uint8_t bandera = 0, lecturaPot = 0;
+uint8_t buffer[3], mensaje[100];
+
+/* Prototipos de funciones */
+void SystemClock_Config(void);
+static void Inicializar_GPIO(void);
+static void Inicializar_SPI1(void);
+static void Inicializar_USART2(void);
+static void Inicializar_USART6(void);
+void Transmitir_UART(char *mensaje);
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin);
+
+int main(void) {
+    HAL_Init();
+    SystemClock_Config();
+    Inicializar_GPIO();
+    Inicializar_SPI1();
+    MX_FATFS_Init();
+    Inicializar_USART2();
+    Inicializar_USART6();
+
+    while (1) {
+        if (bandera) {
+            bandera = 0;
+            HAL_UART_Receive(&huart6, buffer, 1, 100);
+            lecturaPot = buffer[0];
+            HAL_Delay(500);
+
+            // Montaje del sistema de archivos
+            resultado = f_mount(&fs, "/", 0);
+            Transmitir_UART((resultado == FR_OK) ? 
+                            "Micro SD montada correctamente!\n" : 
+                            "Error al montar la Micro SD!\n");
+
+            // Apertura del archivo
+            resultado = f_open(&archivo, "Prueba.txt", FA_OPEN_APPEND | FA_WRITE | FA_READ);
+            Transmitir_UART((resultado == FR_OK) ? 
+                            "Archivo abierto correctamente.\n" : 
+                            "Error al abrir el archivo.\n");
+
+            // Escritura de datos
+            f_puts(lecturaPot, &archivo);
+            resultado = f_close(&archivo);
+            Transmitir_UART((resultado == FR_OK) ? 
+                            "Archivo cerrado correctamente.\n" : 
+                            "Error al cerrar el archivo.\n");
+
+            // Desmontaje de la unidad
+            f_mount(NULL, "", 1);
+            Transmitir_UART((resultado == FR_OK) ? 
+                            "Micro SD desmontada!\n" : 
+                            "Error al desmontar la Micro SD!\n");
+        }
+    }
+}
+
+/* Configuración del reloj */
+void SystemClock_Config(void) {
+    RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+    RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+    __HAL_RCC_PWR_CLK_ENABLE();
+    __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE3);
+
+    RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+    RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+    RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+    RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+    RCC_OscInitStruct.PLL.PLLM = 16;
+    RCC_OscInitStruct.PLL.PLLN = 336;
+    RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV4;
+    HAL_RCC_OscConfig(&RCC_OscInitStruct);
+
+    RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK |
+                                  RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
+    RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+    HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2);
+}
+
+/* Inicialización de periféricos */
+static void Inicializar_SPI1(void) {
+    hspi1.Instance = SPI1;
+    hspi1.Init.Mode = SPI_MODE_MASTER;
+    hspi1.Init.Direction = SPI_DIRECTION_2LINES;
+    hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
+    hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
+    hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
+    hspi1.Init.NSS = SPI_NSS_SOFT;
+    HAL_SPI_Init(&hspi1);
+}
+
+static void Inicializar_USART2(void) {
+    huart2.Instance = USART2;
+    huart2.Init.BaudRate = 115200;
+    huart2.Init.WordLength = UART_WORDLENGTH_8B;
+    huart2.Init.StopBits = UART_STOPBITS_1;
+    huart2.Init.Parity = UART_PARITY_NONE;
+    huart2.Init.Mode = UART_MODE_TX_RX;
+    HAL_UART_Init(&huart2);
+}
+
+static void Inicializar_USART6(void) {
+    huart6.Instance = USART6;
+    huart6.Init.BaudRate = 115200;
+    huart6.Init.WordLength = UART_WORDLENGTH_8B;
+    huart6.Init.StopBits = UART_STOPBITS_1;
+    huart6.Init.Parity = UART_PARITY_NONE;
+    huart6.Init.Mode = UART_MODE_TX_RX;
+    HAL_UART_Init(&huart6);
+}
+
+static void Inicializar_GPIO(void) {
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+
+    GPIO_InitStruct.Pin = SD_SS_Pin;
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+    HAL_GPIO_Init(SD_SS_GPIO_Port, &GPIO_InitStruct);
+
+    GPIO_InitStruct.Pin = Bot_Pin;
+    GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    HAL_GPIO_Init(Bot_GPIO_Port, &GPIO_InitStruct);
+
+    HAL_NVIC_SetPriority(EXTI9_5_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
+}
+
+/* Función de transmisión UART */
+void Transmitir_UART(char *mensaje) {
+    HAL_UART_Transmit(&huart2, (uint8_t *)mensaje, strlen(mensaje), HAL_MAX_DELAY);
+}
+
+/* Callback de interrupción de botón */
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
+    if (HAL_GPIO_ReadPin(Bot_GPIO_Port, Bot_Pin) == 0) {
+        bandera = 1;
+    }
+}
+
+/* Manejo de errores */
+void Error_Handler(void) {
+    __disable_irq();
+    while (1);
+}
